@@ -45,16 +45,18 @@ PLOT_EXTENT       = [-107, -85, 25, 49]
 # Critical angle (Esterheld & Giuliano 2008) — favorable band where surface
 # inflow is roughly perpendicular to 0-500m shear (purely streamwise vorticity).
 # We approximate 500m AGL wind by interpolating between 80m and 925mb winds,
-# treating 925mb as ~762m MSL (standard atmosphere). Rendered as magenta
-# stippled dots so the band reads as a "look here" highlight rather than
-# competing as another map layer.
-CRIT_ANGLE_MIN_DEG   = 85.0
-CRIT_ANGLE_MAX_DEG   = 95.0
-CRIT_ANGLE_OROG_MAX  = 1200.0    # mask cells above this elevation (High Plains)
-CRIT_ANGLE_STIPPLE_STRIDE = 18   # every nth grid cell gets a dot (higher = sparser)
-CRIT_ANGLE_STIPPLE_SIZE   = 8    # marker size in points
-CRIT_ANGLE_STIPPLE_COLOR  = "#ff00d4"   # hot magenta
-STD_ATM_Z_925_MSL    = 762.0     # standard atmosphere 925 mb height, meters
+# treating 925mb as ~762m MSL (standard atmosphere). Rendered as a semi-
+# transparent light-grey hatched fill with a thin outline — SPC-style
+# highlighted-region treatment so the underlying mode color stays readable.
+CRIT_ANGLE_MIN_DEG    = 85.0
+CRIT_ANGLE_MAX_DEG    = 95.0
+CRIT_ANGLE_OROG_MAX   = 1200.0   # mask cells above this elevation (High Plains)
+CRIT_ANGLE_SMOOTH     = 2.0      # gaussian smooth before contouring/filling
+CRIT_ANGLE_HATCH      = "////"   # matplotlib hatch pattern: //, \\, xx, .., +, *
+CRIT_ANGLE_HATCH_COLOR= "#dddddd"  # very light grey, nearly white
+CRIT_ANGLE_HATCH_ALPHA= 0.45     # how see-through the fill is
+CRIT_ANGLE_EDGE_WIDTH = 0.8      # thin outline weight
+STD_ATM_Z_925_MSL     = 762.0    # standard atmosphere 925 mb height, meters
 
 
 # ---------------------------------------------------------------------------
@@ -278,29 +280,42 @@ def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = No
         linewidths=REFC_LINEWIDTH,
     )
 
-    # Stippling for the favorable critical-angle band (85-95° = near-perfect
-    # streamwise vorticity ingestion). Magenta dots at every Nth grid cell —
-    # high contrast against every color in the storm-mode colormap, doesn't
-    # compete with the black precip contour, reads as "look here" waypoints.
+    # Hatched fill + thin outline for the favorable critical-angle band
+    # (85-95° = near-perfect streamwise vorticity ingestion). Light grey,
+    # semi-transparent — SPC-style "highlighted region" idiom, lets the
+    # underlying mode color show through while still calling out the area.
     ca = result.critical_angle
-    favorable_mask = (
+    favorable = (
         (ca >= CRIT_ANGLE_MIN_DEG) & (ca <= CRIT_ANGLE_MAX_DEG)
-    ).values   # bool ndarray, shape (y, x)
-    # Subsample on a regular stride so dot density is controllable.
-    stride = CRIT_ANGLE_STIPPLE_STRIDE
-    sub_mask = favorable_mask[::stride, ::stride]
-    if sub_mask.any():
-        lon2d = ca["longitude"].values[::stride, ::stride]
-        lat2d = ca["latitude"].values[::stride, ::stride]
-        ax.scatter(
-            lon2d[sub_mask], lat2d[sub_mask],
-            s=CRIT_ANGLE_STIPPLE_SIZE,
-            c=CRIT_ANGLE_STIPPLE_COLOR,
-            marker="o",
-            edgecolors="none",
-            transform=ccrs.PlateCarree(),
-            zorder=5,
-        )
+    ).astype(float)
+    fav_data = (gaussian_filter(favorable.values, sigma=CRIT_ANGLE_SMOOTH)
+                if CRIT_ANGLE_SMOOTH > 0 else favorable.values)
+    fav_smooth = favorable.copy(data=fav_data)
+
+    # Filled hatch (range above 0.5 = inside the favorable band).
+    fav_smooth.plot.contourf(
+        ax=ax, **plot_kw,
+        levels=[0.5, 1.01],
+        colors="none",
+        hatches=[CRIT_ANGLE_HATCH],
+        add_colorbar=False,
+    )
+    # Thin outline at the same boundary, in the same light-grey color.
+    fav_smooth.plot.contour(
+        ax=ax, **plot_kw,
+        levels=[0.5],
+        colors=CRIT_ANGLE_HATCH_COLOR,
+        linewidths=CRIT_ANGLE_EDGE_WIDTH,
+        alpha=CRIT_ANGLE_HATCH_ALPHA + 0.3,
+    )
+    # Re-color the hatch lines to light grey, semi-transparent. matplotlib
+    # draws hatches in the edgecolor of the PolyCollection, which contourf
+    # exposes after the fact.
+    for coll in ax.collections:
+        if coll.get_hatch() == CRIT_ANGLE_HATCH:
+            coll.set_edgecolor(CRIT_ANGLE_HATCH_COLOR)
+            coll.set_alpha(CRIT_ANGLE_HATCH_ALPHA)
+            coll.set_linewidth(0.5)
 
     ax.add_feature(cfeature.STATES, linewidth=0.5, edgecolor="black")
     ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
@@ -314,7 +329,7 @@ def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = No
     title_lines.append(
         f"Color = storm mode  |  "
         f"Black contour = {REFC_CONTOUR_DBZ:.0f} dBZ reflectivity  |  "
-        f"Magenta dots = critical angle {CRIT_ANGLE_MIN_DEG:.0f}–{CRIT_ANGLE_MAX_DEG:.0f}°  |  "
+        f"Grey hatch = critical angle {CRIT_ANGLE_MIN_DEG:.0f}–{CRIT_ANGLE_MAX_DEG:.0f}°  |  "
         f"Masked to STP > {STP_MASK}"
     )
     ax.set_title("\n".join(title_lines), fontsize=11)
