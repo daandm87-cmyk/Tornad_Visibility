@@ -1,0 +1,13 @@
+name: chase
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - herbie-data
+  - metpy
+  - cartopy
+  - cfgrib
+  - matplotlib
+  - numpy
+  - xarray
+  - scipy

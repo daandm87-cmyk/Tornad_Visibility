@@ -1,0 +1,46 @@
+name: Generate chase window forecast
+
+# On-demand only — triggered manually from the Actions tab.
+# To add a schedule later, uncomment the `schedule` block.
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 12,15,18,21 * * *"   # 12Z, 15Z, 18Z, 21Z daily
+
+# Grant the workflow permission to push commits back to the repo.
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Miniforge
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          activate-environment: chase
+          environment-file: environment.yml
+          auto-activate-base: false
+
+      - name: Render chase window
+        shell: bash -el {0}
+        run: |
+          python chase_window_online.py
+
+      - name: Commit and push updated HTML
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update chase forecast $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
