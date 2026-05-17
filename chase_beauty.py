@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import cartopy.crs as ccrs
@@ -285,37 +286,50 @@ def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = No
     # semi-transparent — SPC-style "highlighted region" idiom, lets the
     # underlying mode color show through while still calling out the area.
     ca = result.critical_angle
-    favorable = (
-        (ca >= CRIT_ANGLE_MIN_DEG) & (ca <= CRIT_ANGLE_MAX_DEG)
-    ).astype(float)
-    fav_data = (gaussian_filter(favorable.values, sigma=CRIT_ANGLE_SMOOTH)
-                if CRIT_ANGLE_SMOOTH > 0 else favorable.values)
+    # Restrict the favorable mask to cells where the mode is also valid
+    # (STP > mask). Avoids painting hatch over off-domain / no-environment
+    # regions of the map.
+    mode_valid = result.mode.notnull()
+    ca_in_band = (ca >= CRIT_ANGLE_MIN_DEG) & (ca <= CRIT_ANGLE_MAX_DEG)
+    favorable = (ca_in_band & mode_valid).astype(float)
+    fav_arr = np.nan_to_num(favorable.values, nan=0.0)
+    n_fav_raw = int(fav_arr.sum())
+    fav_data = (gaussian_filter(fav_arr, sigma=CRIT_ANGLE_SMOOTH)
+                if CRIT_ANGLE_SMOOTH > 0 else fav_arr)
     fav_smooth = favorable.copy(data=fav_data)
+    n_fav_smoothed = int((fav_data > 0.5).sum())
 
-    # Filled hatch (range above 0.5 = inside the favorable band).
-    fav_smooth.plot.contourf(
-        ax=ax, **plot_kw,
-        levels=[0.5, 1.01],
-        colors="none",
-        hatches=[CRIT_ANGLE_HATCH],
-        add_colorbar=False,
-    )
-    # Thin outline at the same boundary, in the same light-grey color.
-    fav_smooth.plot.contour(
-        ax=ax, **plot_kw,
-        levels=[0.5],
-        colors=CRIT_ANGLE_HATCH_COLOR,
-        linewidths=CRIT_ANGLE_EDGE_WIDTH,
-        alpha=CRIT_ANGLE_HATCH_ALPHA + 0.3,
-    )
-    # Re-color the hatch lines to light grey, semi-transparent. matplotlib
-    # draws hatches in the edgecolor of the PolyCollection, which contourf
-    # exposes after the fact.
-    for coll in ax.collections:
-        if coll.get_hatch() == CRIT_ANGLE_HATCH:
-            coll.set_edgecolor(CRIT_ANGLE_HATCH_COLOR)
-            coll.set_alpha(CRIT_ANGLE_HATCH_ALPHA)
-            coll.set_linewidth(0.5)
+    # Only render hatch + outline if there's actually a favorable region.
+    # Without this guard matplotlib can paint hatch across the entire axes
+    # when no contour crosses the level boundary.
+    if n_fav_smoothed > 0:
+        # Style the hatch via rcParams (more reliable than post-hoc edits).
+        with mpl.rc_context({
+            "hatch.color":     CRIT_ANGLE_HATCH_COLOR,
+            "hatch.linewidth": 0.6,
+        }):
+            # Use a real semi-transparent fill color rather than 'none' —
+            # 'none' makes matplotlib's polygon collection apply hatch to
+            # the whole axes in some versions. A near-invisible real fill
+            # keeps the polygon properly clipped to the level band.
+            fill_rgba = mpl.colors.to_rgba(CRIT_ANGLE_HATCH_COLOR,
+                                           alpha=CRIT_ANGLE_HATCH_ALPHA)
+            fav_smooth.plot.contourf(
+                ax=ax, **plot_kw,
+                levels=[0.5, 1.01],
+                colors=[fill_rgba],
+                hatches=[CRIT_ANGLE_HATCH],
+                add_colorbar=False,
+                extend="neither",
+            )
+        # Thin outline at the same boundary, slightly more opaque.
+        fav_smooth.plot.contour(
+            ax=ax, **plot_kw,
+            levels=[0.5],
+            colors=CRIT_ANGLE_HATCH_COLOR,
+            linewidths=CRIT_ANGLE_EDGE_WIDTH,
+            alpha=0.75,
+        )
 
     ax.add_feature(cfeature.STATES, linewidth=0.5, edgecolor="black")
     ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
