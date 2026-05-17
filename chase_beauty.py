@@ -45,13 +45,16 @@ PLOT_EXTENT       = [-107, -85, 25, 49]
 # Critical angle (Esterheld & Giuliano 2008) — favorable band where surface
 # inflow is roughly perpendicular to 0-500m shear (purely streamwise vorticity).
 # We approximate 500m AGL wind by interpolating between 80m and 925mb winds,
-# treating 925mb as ~762m MSL (standard atmosphere).
-CRIT_ANGLE_MIN_DEG  = 80.0
-CRIT_ANGLE_MAX_DEG  = 110.0
-CRIT_ANGLE_OROG_MAX = 1200.0   # mask cells above this elevation (High Plains)
-CRIT_ANGLE_SMOOTH   = 1.5      # gaussian smooth before contouring favorable band
-CRIT_ANGLE_LINEWIDTH= 1.0
-STD_ATM_Z_925_MSL   = 762.0    # standard atmosphere 925 mb height, meters
+# treating 925mb as ~762m MSL (standard atmosphere). Rendered as magenta
+# stippled dots so the band reads as a "look here" highlight rather than
+# competing as another map layer.
+CRIT_ANGLE_MIN_DEG   = 85.0
+CRIT_ANGLE_MAX_DEG   = 95.0
+CRIT_ANGLE_OROG_MAX  = 1200.0    # mask cells above this elevation (High Plains)
+CRIT_ANGLE_STIPPLE_STRIDE = 18   # every nth grid cell gets a dot (higher = sparser)
+CRIT_ANGLE_STIPPLE_SIZE   = 8    # marker size in points
+CRIT_ANGLE_STIPPLE_COLOR  = "#ff00d4"   # hot magenta
+STD_ATM_Z_925_MSL    = 762.0     # standard atmosphere 925 mb height, meters
 
 
 # ---------------------------------------------------------------------------
@@ -275,22 +278,29 @@ def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = No
         linewidths=REFC_LINEWIDTH,
     )
 
-    # White outline of the favorable critical-angle band (80-110° = streamwise
-    # vorticity ingestion). Built as a binary "in-band" mask then contoured at
-    # 0.5 so we get one clean closed curve per favorable region.
+    # Stippling for the favorable critical-angle band (85-95° = near-perfect
+    # streamwise vorticity ingestion). Magenta dots at every Nth grid cell —
+    # high contrast against every color in the storm-mode colormap, doesn't
+    # compete with the black precip contour, reads as "look here" waypoints.
     ca = result.critical_angle
-    favorable = (
+    favorable_mask = (
         (ca >= CRIT_ANGLE_MIN_DEG) & (ca <= CRIT_ANGLE_MAX_DEG)
-    ).astype(float)
-    favorable_data = (gaussian_filter(favorable.values, sigma=CRIT_ANGLE_SMOOTH)
-                      if CRIT_ANGLE_SMOOTH > 0 else favorable.values)
-    favorable_smooth = favorable.copy(data=favorable_data)
-    favorable_smooth.plot.contour(
-        ax=ax, **plot_kw,
-        levels=[0.5],
-        colors="white",
-        linewidths=CRIT_ANGLE_LINEWIDTH,
-    )
+    ).values   # bool ndarray, shape (y, x)
+    # Subsample on a regular stride so dot density is controllable.
+    stride = CRIT_ANGLE_STIPPLE_STRIDE
+    sub_mask = favorable_mask[::stride, ::stride]
+    if sub_mask.any():
+        lon2d = ca["longitude"].values[::stride, ::stride]
+        lat2d = ca["latitude"].values[::stride, ::stride]
+        ax.scatter(
+            lon2d[sub_mask], lat2d[sub_mask],
+            s=CRIT_ANGLE_STIPPLE_SIZE,
+            c=CRIT_ANGLE_STIPPLE_COLOR,
+            marker="o",
+            edgecolors="none",
+            transform=ccrs.PlateCarree(),
+            zorder=5,
+        )
 
     ax.add_feature(cfeature.STATES, linewidth=0.5, edgecolor="black")
     ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
@@ -304,7 +314,7 @@ def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = No
     title_lines.append(
         f"Color = storm mode  |  "
         f"Black contour = {REFC_CONTOUR_DBZ:.0f} dBZ reflectivity  |  "
-        f"White outline = critical angle {CRIT_ANGLE_MIN_DEG:.0f}–{CRIT_ANGLE_MAX_DEG:.0f}°  |  "
+        f"Magenta dots = critical angle {CRIT_ANGLE_MIN_DEG:.0f}–{CRIT_ANGLE_MAX_DEG:.0f}°  |  "
         f"Masked to STP > {STP_MASK}"
     )
     ax.set_title("\n".join(title_lines), fontsize=11)
