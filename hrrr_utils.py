@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-def recent_run_time(hours_back: int = 1) -> datetime.datetime:
+def recent_run_time(hours_back: int = 3) -> datetime.datetime:
     """Return a naive UTC datetime rounded down to the hour, `hours_back` ago.
 
     HRRR runs hourly but isn't posted instantly, so we step back a few hours
@@ -31,6 +31,40 @@ def recent_run_time(hours_back: int = 1) -> datetime.datetime:
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     t = now - datetime.timedelta(hours=hours_back)
     return t.replace(minute=0, second=0, microsecond=0)
+
+
+def latest_complete_run(max_fxx_needed: int, product: str = "sfc",
+                        search_hours: int = 8) -> datetime.datetime:
+    """Find the most recent HRRR run whose `max_fxx_needed` file is on AWS.
+
+    NOAA does not publish an explicit "run complete" flag, so we probe Herbie
+    (which does a fast existence check, no download) starting from the current
+    hour and walking backward up to `search_hours`. Returns the first run that
+    has its highest-needed forecast hour fully uploaded.
+
+    Raises RuntimeError if no complete run is found within the search window.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    base = now.replace(minute=0, second=0, microsecond=0)
+
+    print(f"Probing AWS for latest complete HRRR run covering F{max_fxx_needed:02d}...")
+    for hb in range(0, search_hours + 1):
+        candidate = base - datetime.timedelta(hours=hb)
+        try:
+            H = Herbie(date=candidate, model="hrrr", product=product,
+                       fxx=max_fxx_needed, verbose=False)
+            # H.grib is the resolved source path/URL when found, None otherwise.
+            if getattr(H, "grib", None) is not None:
+                print(f"  ✓ {candidate:%Y-%m-%d %H:%M UTC} run has F{max_fxx_needed:02d} "
+                      f"available (probed {hb + 1} run(s)).")
+                return candidate
+        except Exception:
+            pass
+        # Quietly continue — this run's max fxx isn't up yet.
+    raise RuntimeError(
+        f"No complete HRRR run found in the last {search_hours} hours that "
+        f"has F{max_fxx_needed:02d} uploaded. Try again in a few minutes."
+    )
 
 
 def load_hrrr(run_time: datetime.datetime, product: str = "sfc",

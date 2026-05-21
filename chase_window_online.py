@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 
 from chase_beauty import compute_hour, render_hour, PLOT_EXTENT
 from chase_slider import build_html
-from hrrr_utils import recent_run_time
+from hrrr_utils import recent_run_time, latest_complete_run
 
 
 TARGET_HOURS_UTC = [21, 22, 23, 0, 1, 2, 3]   # 21Z..03Z
@@ -65,7 +65,19 @@ def render_to_png(result, run_time, fxx, extent) -> bytes:
 
 
 def main() -> None:
-    run_time = recent_run_time()
+    # First, figure out the maximum fxx we'd need from a "right-now" run,
+    # which determines what we probe for on AWS. The latest target (03Z
+    # tomorrow) is the deepest forecast hour, so we use that.
+    now_floor = datetime.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    probe_targets = target_valid_times(now_floor)
+    max_fxx_probe = max(
+        int(round((t - now_floor).total_seconds() / 3600))
+        for t in probe_targets
+    )
+
+    # Poll AWS for the most recent run that actually has F{max_fxx_probe}
+    # uploaded — much better than guessing with a fixed hours_back.
+    run_time = latest_complete_run(max_fxx_needed=max_fxx_probe)
     print(f"HRRR run: {run_time:%Y-%m-%d %H:%M UTC}\n")
 
     targets = target_valid_times(run_time)
@@ -95,11 +107,21 @@ def main() -> None:
     results = []
     for valid, fxx in plan:
         print(f"  -> F{fxx:02d} (valid {valid:%H UTC})...", end=" ", flush=True)
-        result = compute_hour(run_time, fxx=fxx)
+        try:
+            result = compute_hour(run_time, fxx=fxx)
+        except Exception as e:
+            # Most likely cause: this forecast hour hasn't finished uploading
+            # to AWS yet, or the run had a hole. Log and skip.
+            print(f"SKIP ({type(e).__name__}: {e})")
+            continue
         d = result.diagnostics
         results.append((valid, fxx, result))
         print(f"STP max {d['stp_max']:.2f}, "
               f"CA-favorable {d['ca_favorable_pixels']:,} px")
+
+    if not results:
+        print("\nNo hours computed successfully — nothing to render.")
+        return
 
     # --- Render pass: cheap matplotlib redraws at each extent --------------
     os.makedirs("docs", exist_ok=True)
