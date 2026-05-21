@@ -253,7 +253,8 @@ def compute_hour(run_time, fxx: int) -> HourResult:
 # ---------------------------------------------------------------------------
 # Plot one hour onto an existing axes (or create one if ax is None)
 # ---------------------------------------------------------------------------
-def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = None):
+def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = None,
+                extent=None):
     """Draw the visibility map for a single HourResult."""
     if ax is None:
         fig, ax = plt.subplots(figsize=(13, 8.5),
@@ -334,7 +335,7 @@ def render_hour(result: HourResult, ax=None, run_time=None, fxx: int | None = No
     ax.add_feature(cfeature.STATES, linewidth=0.5, edgecolor="black")
     ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
     ax.add_feature(cfeature.BORDERS, linewidth=0.6)
-    ax.set_extent(PLOT_EXTENT)
+    ax.set_extent(extent if extent is not None else PLOT_EXTENT)
 
     valid_str = np.datetime_as_string(result.valid_time, unit="m").replace("T", " ")
     title_lines = [f"Tornado Visibility Forecast — Valid {valid_str} UTC"]
