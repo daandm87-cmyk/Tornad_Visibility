@@ -38,6 +38,15 @@ PW_DRY_RANGE_IN   = 1.0
 PW_WET_RANGE_IN   = 0.5
 PW_WEIGHT         = 0.12
 STP_MASK          = 0.5
+
+# Low-level storm-relative inflow modifier. Weak anvil SR flow makes a storm
+# precip-heavy (HP mechanism), but strong LOW-LEVEL SR inflow ventilates the
+# bear's cage and keeps the tornado region visible anyway (fast movers, e.g.
+# 2026-06-11 Illinois). Ramps from 0 at LLSR_FLOOR_KT to LLSR_WEIGHT at
+# LLSR_CEIL_KT, one-sided (only nudges toward visible/LP, never toward HP).
+LLSR_FLOOR_KT     = 20.0
+LLSR_CEIL_KT      = 40.0
+LLSR_WEIGHT       = 0.25
 REFC_CONTOUR_DBZ  = 30.0
 REFC_SMOOTH_SIGMA = 1.0
 REFC_LINEWIDTH    = 0.6
@@ -176,7 +185,17 @@ def compute_hour(run_time, fxx: int) -> HourResult:
     dry_bonus   = ((PW_NEUTRAL_IN - pwat_in) / PW_DRY_RANGE_IN).clip(0, 1)
     wet_penalty = ((PW_NEUTRAL_IN - pwat_in) / PW_WET_RANGE_IN).clip(-1, 0)
     pw_term = (dry_bonus + wet_penalty) * PW_WEIGHT
-    mode = (sr_term + pw_term).clip(0, 1).where(stp_vals > STP_MASK)
+
+    # Low-level SR inflow term: 10m wind minus storm motion, in knots.
+    # Strong low-level SR inflow keeps the meso ventilated and the tornado
+    # visible even when weak anvil SR flow makes the storm precip-heavy.
+    llsr_u = ds_10m["u10"] - ds_storm["ustm"]
+    llsr_v = ds_10m["v10"] - ds_storm["vstm"]
+    llsr_kt = np.sqrt(llsr_u ** 2 + llsr_v ** 2) * 1.94384
+    llsr_term = (((llsr_kt - LLSR_FLOOR_KT) / (LLSR_CEIL_KT - LLSR_FLOOR_KT))
+                 .clip(0, 1) * LLSR_WEIGHT)
+
+    mode = (sr_term + pw_term + llsr_term).clip(0, 1).where(stp_vals > STP_MASK)
 
     # ---- Critical Angle ----------------------------------------------------
     # Angle between 10m storm-relative wind and 0-500m AGL shear vector.
@@ -228,6 +247,7 @@ def compute_hour(run_time, fxx: int) -> HourResult:
     diagnostics = {
         "mlcape_max": float(mlcape.max()),
         "srh01_max": float(srh01.max()),
+        "llsr_kt_max": float(llsr_kt.max()),
         "shear06_max": float(shear06.metpy.dequantify().max()),
         "lcl_med": float(lcl_agl_da.median()),
         "sr_kt_max": float(sr_kt.max()),
