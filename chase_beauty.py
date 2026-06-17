@@ -75,12 +75,12 @@ STD_ATM_Z_925_MSL     = 762.0    # standard atmosphere 925 mb height, meters
 # Colorblind-safe (no red/green opposition).
 # ---------------------------------------------------------------------------
 _CMAP_STOPS = [
-    (0.00, "#3b0a4a"),   # deep purple — strongest HP
-    (0.40, "#3a72b8"),   # blue — edge of HP zone (sharp jump from here ↓)
-    (0.40, "#1fb89a"),   # teal — start of Classic band
-    (0.60, "#1fb89a"),   # teal — end of Classic band
-    (0.60, "#a8d63a"),   # yellow-green — start of LP zone (sharp jump ↑)
-    (1.00, "#fce91a"),   # bright yellow — strongest LP
+    (0.00,  "#3b0a4a"),   # deep purple — strongest HP
+    (0.40,  "#3a72b8"),   # blue — edge of HP zone (sharp jump from here ↓)
+    (0.4001, "#1fb89a"),  # teal — start of Classic band
+    (0.60,  "#1fb89a"),   # teal — end of Classic band
+    (0.6001, "#a8d63a"),  # yellow-green — start of LP zone (sharp jump ↑)
+    (1.00,  "#fce91a"),   # bright yellow — strongest LP
 ]
 MODE_CMAP = LinearSegmentedColormap.from_list("hp_classic_lp", _CMAP_STOPS)
 
