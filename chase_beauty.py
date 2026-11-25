@@ -47,6 +47,20 @@ STP_MASK          = 0.5
 # region visible. Ramps 0→1 between LLSR_FLOOR_KT and LLSR_CEIL_KT.
 LLSR_FLOOR_KT     = 20.0
 LLSR_CEIL_KT      = 50.0
+
+# Storm motion behind every storm-relative wind above (anvil SR, 10 m SR
+# inflow) and the critical angle.
+#   "bunkers": Bunkers right mover with SPC's convention, built from HRRR
+#              pressure-level winds: 0-6 km AGL NON-pressure-weighted mean
+#              wind, shear from the 0-500 m mean to the 5.5-6 km mean, 7.5 m/s
+#              to the right. Same as SPC's mesoanalysis and MesoXV.
+#   "hrrr":    HRRR's own USTM/VSTM (the original setting). It runs ~6-10 kt
+#              slower than Bunkers; 2026-06-11 Illinois: HRRR 25 kt, Bunkers
+#              34 kt, observed 35-43 kt. Tested on five days, see CLAUDE.md.
+STORM_MOTION      = "bunkers"
+BUNKERS_DEV_MS    = 7.5      # deviation to the right of the mean wind, m/s
+BUNKERS_STEP_M    = 100.0    # profile sampled every 100 m, 0-6000 m AGL
+BUNKERS_TOP_HPA   = 250      # pressure levels above this aren't needed
 REFC_CONTOUR_DBZ  = 30.0
 REFC_SMOOTH_SIGMA = 1.0
 REFC_LINEWIDTH    = 0.6
@@ -98,6 +112,68 @@ class HourResult:
 
 
 # ---------------------------------------------------------------------------
+# Storm motion: Bunkers right mover, SPC convention
+# ---------------------------------------------------------------------------
+def bunkers_right_spc(gh, u, v, u10, v10, orog, rows: int = 128):
+    """Bunkers et al. (2000) right-mover storm motion, SPC convention.
+
+    gh, u, v: (level, y, x) arrays on pressure levels, ordered from the
+    highest pressure (lowest level) upward; gh in m MSL, winds in m/s.
+    u10, v10, orog: (y, x). The profile starts with the 10 m wind at the
+    ground; levels at or below the ground take the surface wind at height 0
+    and drop out. Winds are sampled every BUNKERS_STEP_M from 0 to 6000 m
+    AGL (as MesoXV's analysis.py does), then:
+        mean  = 0-6 km mean wind (non-pressure-weighted)
+        shear = mean(5.5-6 km) - mean(0-0.5 km)
+        storm = mean + BUNKERS_DEV_MS to the right of the shear.
+    Worked in blocks of `rows` grid rows to keep memory low on the full grid.
+    Returns (u_storm, v_storm) in m/s, in the same (grid-relative) frame as
+    the input winds.
+    """
+    heights = np.arange(0.0, 6000.0 + 1.0, BUNKERS_STEP_M)
+    ny = orog.shape[0]
+    us = np.empty(orog.shape, dtype=np.float32)
+    vs = np.empty(orog.shape, dtype=np.float32)
+    for j0 in range(0, ny, rows):
+        sl = slice(j0, min(j0 + rows, ny))
+        zs, u0, v0 = orog[sl], u10[sl], v10[sl]
+        z = gh[:, sl] - zs[None]
+        above = z > 0
+        z = np.concatenate([np.zeros_like(zs)[None], np.where(above, z, 0.0)])
+        z = np.maximum.accumulate(z, axis=0)           # keep heights monotone
+        uu = np.concatenate([u0[None], np.where(above, u[:, sl], u0[None])])
+        vv = np.concatenate([v0[None], np.where(above, v[:, sl], v0[None])])
+        nl = z.shape[0]
+        sums = {"mean": [0.0, 0.0, 0], "low": [0.0, 0.0, 0], "top": [0.0, 0.0, 0]}
+        for h in heights:
+            k = np.clip((z <= h).sum(0) - 1, 0, nl - 2)[None]
+            z0 = np.take_along_axis(z, k, 0)[0]
+            z1 = np.take_along_axis(z, k + 1, 0)[0]
+            w = np.where(z1 > z0, (h - z0) / np.maximum(z1 - z0, 1e-6), 0.0)
+            w = np.clip(w, 0.0, 1.0)
+            ua = np.take_along_axis(uu, k, 0)[0]
+            va = np.take_along_axis(vv, k, 0)[0]
+            uh = ua + w * (np.take_along_axis(uu, k + 1, 0)[0] - ua)
+            vh = va + w * (np.take_along_axis(vv, k + 1, 0)[0] - va)
+            parts = ["mean"]
+            if h <= 500.0:
+                parts.append("low")
+            if h >= 5500.0:
+                parts.append("top")
+            for p in parts:
+                sums[p][0] = sums[p][0] + uh
+                sums[p][1] = sums[p][1] + vh
+                sums[p][2] += 1
+        mean_u, mean_v = (sums["mean"][0] / sums["mean"][2], sums["mean"][1] / sums["mean"][2])
+        shr_u = sums["top"][0] / sums["top"][2] - sums["low"][0] / sums["low"][2]
+        shr_v = sums["top"][1] / sums["top"][2] - sums["low"][1] / sums["low"][2]
+        mag = np.maximum(np.hypot(shr_u, shr_v), 1e-6)
+        us[sl] = mean_u + BUNKERS_DEV_MS * shr_v / mag
+        vs[sl] = mean_v - BUNKERS_DEV_MS * shr_u / mag
+    return us, vs
+
+
+# ---------------------------------------------------------------------------
 # Per-hour computation, factored out so the slider can reuse it
 # ---------------------------------------------------------------------------
 def compute_hour(run_time, fxx: int) -> HourResult:
@@ -114,6 +190,7 @@ def compute_hour(run_time, fxx: int) -> HourResult:
     ds_pw    = find_dataset_with(sfc_list, "pwat")
     ds_refc  = find_dataset_with(sfc_list, "refc")
     ds_prs   = find_dataset_with(prs_list, "u", "v", require_coord="isobaricInhPa")
+    ds_gh    = find_dataset_with(prs_list, "gh", require_coord="isobaricInhPa")
 
     # Explicit lookup for the 80m wind cube — needs to be scalar heightAboveGround=80,
     # to disambiguate from any other sfc cube that happens to have u/v fields.
@@ -132,6 +209,7 @@ def compute_hour(run_time, fxx: int) -> HourResult:
                       ("precipitable water", ds_pw),
                       ("composite reflectivity", ds_refc),
                       ("pressure-level winds", ds_prs),
+                      ("pressure-level heights", ds_gh),
                       ("80 m winds", ds_80m)]:
         if ds is None:
             raise RuntimeError(f"Could not find {label} hypercube at fxx={fxx}.")
@@ -150,9 +228,26 @@ def compute_hour(run_time, fxx: int) -> HourResult:
     # MLCAPE (90 mb mixed-layer parcel)
     mlcape = ds_cape["cape"].sel(pressureFromGroundLayer=9000).metpy.quantify()
 
-    # Storm motion
-    storm_u = ds_storm["ustm"].metpy.quantify()
-    storm_v = ds_storm["vstm"].metpy.quantify()
+    # Storm motion (see STORM_MOTION)
+    if STORM_MOTION == "bunkers":
+        levels = sorted((float(p) for p in ds_prs["isobaricInhPa"].values
+                         if p >= BUNKERS_TOP_HPA), reverse=True)
+        su, sv = bunkers_right_spc(
+            ds_gh["gh"].sel(isobaricInhPa=levels).values.astype(np.float32),
+            ds_prs["u"].sel(isobaricInhPa=levels).values.astype(np.float32),
+            ds_prs["v"].sel(isobaricInhPa=levels).values.astype(np.float32),
+            ds_10m["u10"].values.astype(np.float32),
+            ds_10m["v10"].values.astype(np.float32),
+            ds_orog["orog"].values.astype(np.float32))
+        storm_u_da = ds_10m["u10"].copy(data=su).rename("storm_u")
+        storm_v_da = ds_10m["v10"].copy(data=sv).rename("storm_v")
+        storm_u_da.attrs = {"units": "m/s"}
+        storm_v_da.attrs = {"units": "m/s"}
+    else:
+        storm_u_da = ds_storm["ustm"]
+        storm_v_da = ds_storm["vstm"]
+    storm_u = storm_u_da.metpy.quantify()
+    storm_v = storm_v_da.metpy.quantify()
 
     # Bulk shear: sfc → 500 mb (computed manually; vucsh is broken)
     u_sfc = ds_10m["u10"].metpy.quantify()
@@ -189,8 +284,8 @@ def compute_hour(run_time, fxx: int) -> HourResult:
     # Low-level SR inflow term: 10m wind minus storm motion, in knots.
     # Strong low-level SR inflow keeps the meso ventilated and the tornado
     # visible even when weak anvil SR flow makes the storm precip-heavy.
-    llsr_u = ds_10m["u10"] - ds_storm["ustm"]
-    llsr_v = ds_10m["v10"] - ds_storm["vstm"]
+    llsr_u = ds_10m["u10"] - storm_u_da
+    llsr_v = ds_10m["v10"] - storm_v_da
     llsr_kt = np.sqrt(llsr_u ** 2 + llsr_v ** 2) * 1.94384
     llsr_term = ((llsr_kt - LLSR_FLOOR_KT)
                  / (LLSR_CEIL_KT - LLSR_FLOOR_KT)).clip(0, 1)
@@ -211,8 +306,6 @@ def compute_hour(run_time, fxx: int) -> HourResult:
     v925 = ds_prs["v"].sel(isobaricInhPa=925)
     u10_da = ds_10m["u10"]
     v10_da = ds_10m["v10"]
-    storm_u_da = ds_storm["ustm"]
-    storm_v_da = ds_storm["vstm"]
     orog_da = ds_orog["orog"]
 
     z_925_agl = STD_ATM_Z_925_MSL - orog_da              # meters AGL

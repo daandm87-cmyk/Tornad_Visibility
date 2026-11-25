@@ -37,13 +37,14 @@ so code locates cubes by variable/coordinate via `find_dataset_with()`.
 | Field | Source | Notes |
 |---|---|---|
 | MLCAPE | sfc `cape` with `pressureFromGroundLayer=9000` | The `cape` at `heightAboveGroundLayer=0` is a cfgrib artifact (~216 J/kg garbage). |
-| Storm motion | sfc `ustm`, `vstm` | Values fine despite broken level metadata. |
+| Storm motion | **computed** (default): Bunkers right mover, SPC convention, from prs `gh`/`u`/`v` + sfc `u10`/`v10` + `orog` | `STORM_MOTION = "hrrr"` switches back to sfc `ustm`/`vstm` (values fine despite broken level metadata; ~6-10 kt slower than Bunkers). |
+| Pressure-level heights | prs `gh` on `isobaricInhPa` | Geopotential height MSL; subtract `orog` for AGL. |
 | 0–6 km bulk shear | **computed**: prs 500mb wind minus sfc 10m wind | `vucsh`/`vvcsh` are broken (mislabeled, degenerate level). |
 | 0–1 km SRH | sfc `hlcy` at `heightAboveGroundLayer=1000` | 3000 also available. |
 | LCL | sfc `gh` at `adiabaticCondensation` minus `orog` | `gh` is AMSL; subtract orography for AGL. |
 | PW | sfc `pwat` (kg/m² ÷ 25.4 = inches) | |
 | Reflectivity | sfc `refc` | Labeled dB, values are dBZ. |
-| Upper winds | prs `u`/`v` on `isobaricInhPa` (1000,925,850,700,500,300,250) | |
+| Upper winds | prs `u`/`v` on `isobaricInhPa` | Every 25 mb from 1000 to 50 mb (39 levels, checked in the .idx 2026-11-25). |
 | 80 m wind | sfc `u`/`v` with scalar `heightAboveGround=80` | |
 | "1000 m wind" | **sfc cube 11 is NOT usable** | Verified via GRIB metadata: `stepType='max'` hourly-max diagnostic; 10m level duplicates u10, 1000m level is mostly zeros. |
 
@@ -69,6 +70,15 @@ llsr_term = ramp(10m SR wind,   20 -> 50 kt)    # 10m wind minus storm motion
 pw_term   = +/-0.12 from precipitable water     # neutral 1.5", dry sat 0.5", wet sat 2.0"
 mode      = clip(max(sr_term, llsr_term) + pw_term, 0, 1)
 ```
+
+**Storm motion** (used for both SR terms and the critical angle): Bunkers
+right mover with SPC's convention, `bunkers_right_spc()`: 10 m wind at the
+ground plus every prs level up to 250 mb at its height AGL, sampled every
+100 m; 0-6 km NON-pressure-weighted mean wind, shear from the 0-500 m mean
+to the 5.5-6 km mean, 7.5 m/s to the right. Same code path as MesoXV's
+`analysis.bunkers_right` (agrees to 1e-6 m/s). Adds ~12 s per hour on the
+full grid. HRRR's own `ustm`/`vstm` is the fallback (`STORM_MOTION`). STP
+still uses HRRR's `hlcy`, which HRRR computes with its own storm motion.
 
 The `max()` encodes two independent ventilation pathways: strong anvil-level
 SR flow OR strong low-level SR inflow can each keep the tornado visible. The
@@ -122,6 +132,24 @@ Treat these as ground truth for tuning. One event is not a trend.
   with the `max()` formulation, after which the map showed some
   visible-tornado spots. **Watch for:** a slow-moving, high-PW day should still
   render purple. If everything drifts teal, the term is overcorrecting.
+- **2026-11-25, storm motion switched to SPC Bunkers.** Scratch test (HRRR
+  F01, TV's STP > 0.5 area, fractions HP/Classic/LP, HRRR motion -> Bunkers):
+  - 2026-06-11 IL 21-00Z: 96-100/0-3/0-1 % -> 62-72/20-30/1-13 %; storm
+    speed 25 -> 34 kt (observed 35-43 kt). Index at the 26 tornado reports
+    0.00-0.16 -> 0.05-0.50 (3 Classic, 16 at 0.25-0.40, 7 below 0.25, mostly
+    Champaign/Ford at 00Z); Classic/LP patch just north of the
+    LaSalle/Livingston reports. From the 12Z run (F10-F12):
+    88-94 % HP -> 53-58 % HP, 19-22 % Classic, 23-29 % LP.
+  - 2026-04-29 Ozona 21-01Z: the bright-yellow LP strip (78-98 % LP) becomes
+    mostly Classic (37-57 % Classic, 12-43 % LP), closer to the observed
+    Classic/low-end HP storm. Here HRRR's motion (16-20 kt) was nearer the
+    storm's ~15-22 kt (from hail-report times) than Bunkers (22-30 kt).
+  - Slow, high-PW days stay purple: 2026-06-21 S IL/IN (PW 1.8-2.0") 96-100 %
+    -> 81-99 % HP; 2025-06-25 SE MN/SW WI (PW 2.1", tornado tracks ~24 kt)
+    99-100 % -> 89-98 % HP; 2024-06-05 MD (PW 2.0", tracks ~18 kt) 100 % ->
+    100 % HP. Of the four days with an observed speed, Bunkers was nearer it
+    on all but Ozona.
+  Five days, still not a calibration; keep watching both failure modes.
 
 ---
 
